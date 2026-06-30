@@ -1,0 +1,38 @@
+{
+  "name": "utilitarianism",
+  "author": "Nik Bilous",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {
+    "@moddable/pebbleproxy": "*"
+  },
+  "pebble": {
+    "displayName": "Utilitarianism",
+    "uuid": "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
+    "projectType": "moddable",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": ["emery"],
+    "capabilities": ["location", "health"],
+    "watchapp": { "watchface": true },
+    "messageKeys": [
+      "HEALTH_STEPS",
+      "HEART_RATE_BPM"
+    ],
+    "resources": {
+      "media": [
+        { "type": "png", "name": "IC_HEART",  "file": "stride_heart.png" },
+        { "type": "png", "name": "IC_STEPS",  "file": "stride_shoe_blue.png" },
+        { "type": "raw", "name": "IC_SUNNY",  "file": "ic_sunny.pdc" },
+        { "type": "raw", "name": "IC_PARTLY", "file": "ic_partly.pdc" },
+        { "type": "raw", "name": "IC_CLOUDY", "file": "ic_cloudy.pdc" },
+        { "type": "raw", "name": "IC_DRIZZLE", "file": "ic_drizzle.pdc" },
+        { "type": "raw", "name": "IC_RAIN",   "file": "ic_rain.pdc" },
+        { "type": "raw", "name": "IC_SNOW",   "file": "ic_snow.pdc" },
+        { "type": "raw", "name": "IC_SLEET",  "file": "ic_sleet.pdc" },
+        { "type": "raw", "name": "IC_FOG",    "file": "ic_fog.pdc" }
+      ]
+    }
+  }
+}

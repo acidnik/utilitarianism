@@ -1,0 +1,19 @@
+# Pebble build artifacts
+build/
+.lock-waf_*
+
+# Node dependencies
+node_modules/
+
+# Temp scratch files
+tmp/
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
