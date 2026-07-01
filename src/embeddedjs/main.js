@@ -239,8 +239,10 @@ function requestLocation() {
       onSample() {
         const s = this.sample();
         console.log("location: got " + s.latitude + ", " + s.longitude);
+        lastLat = s.latitude;
+        lastLon = s.longitude;
         this.close();
-        fetchWeather(s.latitude, s.longitude);
+        fetchWeather(lastLat, lastLon);
       },
       onError(e) {
         console.log("location error: " + e);
@@ -254,5 +256,17 @@ function requestLocation() {
 // redraw helper using current time
 function redraw() { draw({ date: new Date() }); }
 
+// Cache last known coordinates so weather can be refreshed without re-requesting GPS.
+let lastLat = null;
+let lastLon = null;
+
 watch.addEventListener("minutechange", function (e) { console.log("U: mc"); draw(e); });
 watch.addEventListener("hourchange", function (e) { console.log("U: hc"); requestLocation(); });  // fires immediately too
+
+// Refresh weather every 15 minutes using cached coordinates (no GPS re-request).
+Timer.repeat(function () {
+  if (lastLat !== null && lastLon !== null) {
+    console.log("U: 15min weather refresh");
+    fetchWeather(lastLat, lastLon);
+  }
+}, 15 * 60 * 1000);
