@@ -72,6 +72,7 @@ console.log("U: app started");
 // ---- Live data (filled by fetchWeather / sensors) ----
 let battery     = 1;       // 0..1 fraction, from Battery sensor
 let temp        = null;
+let feelsLike   = null;
 let weatherCode = 0;
 let bpm         = -1;
 let steps       = -1;
@@ -141,7 +142,13 @@ function draw(event) {
 
   // Cell 2: WEATHER
   render.drawDCI(weatherIcon(weatherCode), 108, 92);
-  const tStr = (temp === null) ? "--" : ((temp >= 0 ? "+" : "") + temp + "\u00B0");
+  let tStr;
+  if (temp === null) {
+    tStr = "--";
+  } else {
+    const show = feelsLike !== null ? feelsLike : temp;
+    tStr = (show >= 0 ? "+" : "") + show + "\u00B0";
+  }
   textCentered(tStr, bigFont, white, 150, W, 100);
 
   // Cell 3: HEART
@@ -217,11 +224,12 @@ function httpGet(host, port, path) {
 async function fetchWeather(lat, lon) {
   try {
     const path = "/v1/forecast?latitude=" + lat + "&longitude=" + lon +
-      "&current=temperature_2m,weather_code&daily=sunrise,sunset&timezone=auto";
+      "&current=temperature_2m,apparent_temperature,weather_code&daily=sunrise,sunset&timezone=auto";
     console.log("weather: fetching " + path);
     const text = await httpGet("api.open-meteo.com", 80, path);
     const data = JSON.parse(text);
     temp        = Math.round(data.current.temperature_2m);
+    feelsLike   = Math.round(data.current.apparent_temperature);
     weatherCode = data.current.weather_code;
     sunrise     = hmsToFrac(data.daily.sunrise[0]);
     sunset      = hmsToFrac(data.daily.sunset[0]);
