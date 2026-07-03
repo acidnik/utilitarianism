@@ -36,12 +36,13 @@ Pebble.addEventListener('appmessage', function (e) {
   if (!e || !e.payload)
     return;
 
-  const payload = e.payload;
   const relay = {};
-  if (payload.HEALTH_STEPS !== undefined)
-    relay.HEALTH_STEPS = payload.HEALTH_STEPS;
-  if (payload.HEART_RATE_BPM !== undefined)
-    relay.HEART_RATE_BPM = payload.HEART_RATE_BPM;
+  if (e.payload.HEALTH_STEPS !== undefined)
+    relay.HEALTH_STEPS = e.payload.HEALTH_STEPS;
+  if (e.payload.HEART_RATE_BPM !== undefined)
+    relay.HEART_RATE_BPM = e.payload.HEART_RATE_BPM;
+  if (e.payload.QUIET_TIME !== undefined)
+    relay.QUIET_TIME = e.payload.QUIET_TIME;
 
   if (Object.keys(relay).length === 0)
     return;
