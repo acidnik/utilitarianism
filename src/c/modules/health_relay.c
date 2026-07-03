@@ -7,6 +7,7 @@
 // HEART_RATE_BPM=10001, matching package.json messageKeys order).
 extern uint32_t MESSAGE_KEY_HEALTH_STEPS;
 extern uint32_t MESSAGE_KEY_HEART_RATE_BPM;
+extern uint32_t MESSAGE_KEY_QUIET_TIME;
 
 //
 // modules/health_relay — C-side health sampling and AppMessage relay
@@ -36,6 +37,7 @@ static void send_health_snapshot(void) {
 
 	dict_write_int32(iter, MESSAGE_KEY_HEALTH_STEPS, steps);
 	dict_write_int32(iter, MESSAGE_KEY_HEART_RATE_BPM, heart_rate);
+	dict_write_int32(iter, MESSAGE_KEY_QUIET_TIME, quiet_time_is_active() ? 1 : 0);
 
 	app_message_outbox_send();
 	// Don't check result — no retry. Next health event handles it.

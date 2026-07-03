@@ -1,7 +1,7 @@
 {
   "name": "utilitarianism",
   "author": "Nik Bilous",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {
@@ -18,7 +18,8 @@
     "watchapp": { "watchface": true },
     "messageKeys": [
       "HEALTH_STEPS",
-      "HEART_RATE_BPM"
+      "HEART_RATE_BPM",
+      "QUIET_TIME"
     ],
     "resources": {
       "media": [
@@ -31,7 +32,10 @@
         { "type": "raw", "name": "IC_RAIN",   "file": "ic_rain.pdc" },
         { "type": "raw", "name": "IC_SNOW",   "file": "ic_snow.pdc" },
         { "type": "raw", "name": "IC_SLEET",  "file": "ic_sleet.pdc" },
-        { "type": "raw", "name": "IC_FOG",    "file": "ic_fog.pdc" }
+        { "type": "raw", "name": "IC_FOG",    "file": "ic_fog.pdc" },
+        { "type": "png", "name": "IC_QUIET_TIME", "file": "quiet_time_status_icon.png" },
+        { "type": "png", "name": "IC_BLUETOOTH", "file": "settings_icon_bluetooth.png" },
+        { "type": "png", "name": "IC_BLUETOOTH_OFF", "file": "settings_icon_bluetooth_off.png" }
       ]
     }
   }

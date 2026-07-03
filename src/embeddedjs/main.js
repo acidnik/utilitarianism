@@ -13,15 +13,16 @@ const H = render.height;  // 228
 const timeFont = new render.Font("Roboto-Bold", 49);
 const bigFont  = new render.Font("Gothic-Bold", 28);
 const dateFont = new render.Font("Gothic-Bold", 28);
+const smallFont = new render.Font("Gothic-Regular", 14);
 
 // ---- Colors ----
 const black  = render.makeColor(0, 0, 0);
 const white  = render.makeColor(255, 255, 255);
-// const red    = render.makeColor(255, 42, 42);
-const green      = render.makeColor(63, 214, 63);
-const lightGreen = render.makeColor(144, 238, 144);
+const red    = render.makeColor(255, 42, 42);
+const green  = render.makeColor(63, 214, 63);
 const yellow = render.makeColor(255, 224, 0);
 const grayD  = render.makeColor(58, 58, 58);
+const gray   = render.makeColor(150, 150, 150);
 const dark   = render.makeColor(34, 34, 34);
 
 const rainbow = [
@@ -48,7 +49,10 @@ const icDrizzle = new Poco.PebbleDrawCommandImage(6);
 const icRain    = new Poco.PebbleDrawCommandImage(7);
 const icSnow    = new Poco.PebbleDrawCommandImage(8);
 const icSleet   = new Poco.PebbleDrawCommandImage(9);
-const icFog     = new Poco.PebbleDrawCommandImage(10);
+const icFog        = new Poco.PebbleDrawCommandImage(10);
+const icQuietTime  = new Poco.PebbleBitmap(11);
+const icBluetooth   = new Poco.PebbleBitmap(12);
+const icBluetoothOff = new Poco.PebbleBitmap(13);
 
 // Open-Meteo weather_code -> icon mapping
 // Codes follow WMO standard: https://open-meteo.com/en/docs
@@ -76,6 +80,8 @@ let feelsLike   = null;
 let weatherCode = 0;
 let bpm         = -1;
 let steps       = -1;
+let quietTime   = false;
+let isConnected = true;
 let sunrise     = null;   // fraction-of-day hours, from Open-Meteo daily
 let sunset      = null;
 
@@ -95,14 +101,22 @@ battery = batterySensor.sample().percent / 100;   // initial value
 // C-side health_relay.c reads HealthService and sends HEALTH_STEPS /
 // HEART_RATE_BPM over AppMessage; PKJS forwards them back here.
 const healthMessage = new Message({
-  keys: ["HEALTH_STEPS", "HEART_RATE_BPM"],
+  keys: ["HEALTH_STEPS", "HEART_RATE_BPM", "QUIET_TIME"],
   onReadable() {
     const data = healthMessage.read();
     console.log("U: health msg");
     if (data.has("HEALTH_STEPS"))   steps = data.get("HEALTH_STEPS");
     if (data.has("HEART_RATE_BPM")) bpm   = data.get("HEART_RATE_BPM");
+    if (data.has("QUIET_TIME"))    quietTime = data.get("QUIET_TIME") === 1;
     redraw();
   },
+});
+
+// ---- Connection monitoring ----
+isConnected = watch.connected.app;
+watch.addEventListener("connected", function () {
+  isConnected = watch.connected.app;
+  redraw();
 });
 
 function textCentered(str, font, color, x0, x1, y) {
@@ -125,6 +139,25 @@ function draw(event) {
   }
   if (fillW < W) render.fillRectangle(dark, fillW, 0, W - fillW, 6);
 
+  // >80%: below the bar (so it doesn't hide rainbow); ≤80%: on the bar line
+
+  const badgeW = 32, badgeH = 16;
+  const badgeX = W - badgeW;
+  const badgeY = battery > 0.8 ? 7 : 0;
+
+  // Nub — small rectangle between bar and badge (battery terminal)
+  const nubX = badgeX - 3;
+  const nubY = badgeY + (badgeH - 6) / 2;
+  render.fillRectangle(white, nubX, nubY, 4, 6);
+  render.fillRectangle(black, nubX + 1, nubY + 1, 2, 4);
+  render.fillRectangle(black, badgeX, badgeY, badgeW, badgeH);
+  render.fillRectangle(white, badgeX, badgeY, badgeW, 1);
+  render.fillRectangle(white, badgeX, badgeY + badgeH - 1, badgeW, 1);
+  render.fillRectangle(white, badgeX, badgeY, 1, badgeH);
+  render.fillRectangle(white, badgeX + badgeW - 1, badgeY, 1, badgeH);
+  const pct = Math.round(battery * 100);
+  textCentered(String(pct), smallFont, white, badgeX, badgeX + badgeW, badgeY + 1);
+
   // TIME
   const hh = String(now.getHours()).padStart(2, "0");
   const mm = String(now.getMinutes()).padStart(2, "0");
@@ -133,12 +166,17 @@ function draw(event) {
   // GRID lines
   render.fillRectangle(white, 6, 86, W - 12, 2);
   render.fillRectangle(white, 6, 141, W - 12, 2);
-  render.fillRectangle(white, 99, 88, 2, 108);
+  // Top row divider (between date and weather)
+  render.fillRectangle(white, 99, 88, 2, 53);
+  // Bottom row dividers (3 cells)
+  const col1 = 6, col2 = 72, col3 = 138, colR = 194;
+  render.fillRectangle(white, col2, 143, 2, 66);
+  render.fillRectangle(white, col3, 143, 2, 66);
 
   // Cell 1: DATE (day-of-week + day-of-month in one line)
   const weekend = (now.getDay() === 0 || now.getDay() === 6);
   const dateStr = DAYS[now.getDay()] + " " + String(now.getDate()).padStart(2, "0");
-  textCentered(dateStr, dateFont, weekend ? lightGreen : white, 6, 99, 100);
+  textCentered(dateStr, dateFont, weekend ? green : white, 6, 99, 100);
 
   // Cell 2: WEATHER
   render.drawDCI(weatherIcon(weatherCode), 108, 92);
@@ -151,14 +189,23 @@ function draw(event) {
   }
   textCentered(tStr, bigFont, white, 150, W, 100);
 
-  // Cell 3: HEART
-  render.drawBitmap(icHeart, 12, 147);
-  textCentered(bpm < 0 ? "--" : String(bpm), bigFont, white, 6, 99, 175);
+  // Cell 3: HEART (left bottom)
+  const heartX = col1 + ((col2 - col1) - 40) / 2 + 7;
+  render.drawBitmap(icHeart, heartX, 147);
+  textCentered(bpm < 0 ? "--" : String(bpm), bigFont, white, col1, col2, 175);
 
-  // Cell 4: STEPS
-  render.drawBitmap(icSteps, 105, 147);
+  // Cell 4: STEPS (middle bottom)
+  const stepsX = col2 + ((col3 - col2) - 29) / 2;
+  render.drawBitmap(icSteps, stepsX, 147);
   const stepStr = steps < 0 ? "--" : String(steps);
-  textCentered(stepStr, bigFont, white, 99, W, 175);
+  textCentered(stepStr, bigFont, white, col2, col3, 175);
+
+  // Cell 5: Bluetooth + Quiet Time (right bottom)
+  const center5 = (col3 + colR) / 2;
+  render.drawBitmap(isConnected ? icBluetooth : icBluetoothOff, center5 - 8, 147);
+  if (quietTime) {
+    render.drawBitmap(icQuietTime, center5 - 9, 182);
+  }
 
   // DAYLIGHT BAR (noon-centered) — only after weather arrives
   if (sunrise !== null && sunset !== null) {
