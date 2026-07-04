@@ -1,7 +1,7 @@
 {
   "name": "utilitarianism",
   "author": "Nik Bilous",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {
@@ -9,7 +9,6 @@
   },
   "pebble": {
     "displayName": "Utilitarianism",
-    "description": "Readable and informative. Top bar is battery, bottom bar is sunrise/sunset. Displays heart rate, steps, day of week, date and weather. No settings yet",
     "uuid": "73f93fbe-7fb3-439d-885a-3e251cc02b90",
     "projectType": "moddable",
     "sdkVersion": "3",
