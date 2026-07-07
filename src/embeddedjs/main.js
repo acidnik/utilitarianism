@@ -207,17 +207,19 @@ function draw(event) {
     render.drawBitmap(icQuietTime, center5 - 9, 182);
   }
 
-  // DAYLIGHT BAR (noon-centered) — only after weather arrives
+  // DAYLIGHT BAR — 12-hour window centered on astronomical noon
+  // AM: [midnight, noon]  PM: [noon, midnight]  (astronomical)
   if (sunrise !== null && sunset !== null) {
-    const lightW = Math.round(W * ((sunset - sunrise) / 24));
-    render.fillRectangle(grayD, 0, 210, W, 14);
-    render.fillRectangle(yellow, Math.round((W - lightW) / 2), 210, lightW, 14);
-    const noon = (sunrise + sunset) / 2;
     const nowH = now.getHours() + now.getMinutes() / 60;
-    let off = nowH - noon;
-    if (off > 12) off -= 24;
-    if (off < -12) off += 24;
-    const markX = Math.round(W / 2 + (off / 24) * W);
+    const noon = (sunrise + sunset) / 2;
+    const isAM = nowH < noon;
+    const winStart = isAM ? noon - 12 : noon;
+    const winLen = 12;
+    render.fillRectangle(grayD, 0, 210, W, 14);
+    const sx = Math.max(0, Math.min(W, Math.round((sunrise - winStart) / winLen * W)));
+    const ex = Math.max(0, Math.min(W, Math.round((sunset  - winStart) / winLen * W)));
+    render.fillRectangle(yellow, sx, 210, ex - sx, 14);
+    const markX = Math.round((nowH - winStart) / winLen * W);
     render.fillRectangle(green, Math.max(0, Math.min(W - 4, markX)), 206, 4, 22);
   }
 
@@ -233,17 +235,20 @@ function hmsToFrac(iso) {
 }
 
 // HTTP GET via device.network.http.io (bypasses fetch()/Headers which can crash
-// on response headers without ":"). Returns a Promise of the full response body.
+// on response headers without ":"). Caches the client per origin like the SDK fetch.
+let httpClient;
 function httpGet(host, port, path) {
   return new Promise((resolve, reject) => {
-    const client = new device.network.http.io({
-      ...device.network.http,
-      host,
-      port,
-      onError() { client.close(); reject(new Error("HTTP connection error")); },
-    });
+    if (!httpClient) {
+      httpClient = new device.network.http.io({
+        ...device.network.http,
+        host,
+        port,
+        onError() { reject(new Error("HTTP connection error")); },
+      });
+    }
     let body = [];
-    client.request({
+    httpClient.request({
       method: "GET",
       path,
       headers: new Map([["Accept", "application/json"]]),
@@ -255,7 +260,6 @@ function httpGet(host, port, path) {
         if (chunk) body.push(chunk);
       },
       onDone(error) {
-        client.close();
         if (error) reject(new Error(error));
         else if (body.length) {
           const bytes = new Uint8Array(body.reduce((n, b) => n + b.byteLength, 0));
@@ -268,7 +272,10 @@ function httpGet(host, port, path) {
   });
 }
 
+let weatherBusy = false;
 async function fetchWeather(lat, lon) {
+  if (weatherBusy) return;
+  weatherBusy = true;
   try {
     const path = "/v1/forecast?latitude=" + lat + "&longitude=" + lon +
       "&current=temperature_2m,apparent_temperature,weather_code&daily=sunrise,sunset&timezone=auto";
@@ -284,6 +291,8 @@ async function fetchWeather(lat, lon) {
     redraw();
   } catch (e) {
     console.log("weather error: " + e);
+  } finally {
+    weatherBusy = false;
   }
 }
 
