@@ -1,55 +1,140 @@
-// Phone-side PKJS relay:
-//  - moddableProxy: forwards fetch() and Location sensor between watch and phone.
-//  - health relay: forwards HEALTH_STEPS / HEART_RATE_BPM back to watch JS.
 //
-// Patches XMLHttpRequest to work around proxy bugs:
-//  1. setRequestHeader — reject empty header names (trailing \n → split "")
-//  2. getAllResponseHeaders — strip trailing end-of-line markers so split by \r\n
-//     doesn't produce empty trailing entries that crash .map() with undefined.trim().
+// Phone-side PKJS for the pure-C watchface "Utilitarianism".
+//
+// The watch renders everything itself; PKJS only does what C cannot reach from
+// the watch: GPS + network. On a REQUEST_WEATHER AppMessage from the watch it
+// fetches the current weather + today's sunrise/sunset from Open-Meteo and
+// answers with the WEATHER_* keys used by src/c/main.c.
+//
+//   REQUEST_WEATHER == 0  -> force a fresh GPS fix, then fetch (hour change)
+//   REQUEST_WEATHER == 1  -> reuse cached coordinates (15-minute refresh);
+//                            if no cache yet, do nothing (matches the JS timer
+//                            guard `if (lastLat !== null && lastLon !== null)`)
+//
+// Coordinates are cached in memory so the periodic refresh doesn't re-request
+// GPS, exactly like the previous watch-side `lastLat/lastLon` cache.
+//
+// Written without async/await: the original PKJS used plain callbacks/promises
+// and the SDK webpack step does not transpile modern syntax.
 
-const moddableProxy = require("@moddable/pebbleproxy");
+let lastLat = null;
+let lastLon = null;
+let weatherBusy = false;
 
-// Workaround 1: ignore empty header names.
-const _origSRH = XMLHttpRequest.prototype.setRequestHeader;
-XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
-  if (!name) return;
-  return _origSRH.call(this, name, value);
-};
+// "2026-06-29T05:12" -> [hour, minute] numbers.
+function hmsParts(iso) {
+  const t = iso.split("T")[1];
+  const [h, m] = t.split(":").map(Number);
+  return [h, m];
+}
 
-// Workaround 2: strip trailing line endings from getAllResponseHeaders output.
-const _origGARH = XMLHttpRequest.prototype.getAllResponseHeaders;
-XMLHttpRequest.prototype.getAllResponseHeaders = function () {
-  const raw = _origGARH.call(this);
-  if (!raw) return '';
-  // Remove any trailing \r\n sequences (the proxy splits by \r\n, and empty
-  // trailing entries crash its .map() with undefined.trim()).
-  return raw.replace(/(?:\r\n)+$/g, '').replace(/^\r\n/, '');
-};
-
-Pebble.addEventListener('ready', moddableProxy.readyReceived);
-Pebble.addEventListener('appmessage', function (e) {
-  // Let the proxy handle its own messages (HTTP/WS/Location/ready) first.
-  if (moddableProxy.appMessageReceived(e))
-    return;
-
-  // Otherwise: relay health keys from watch C back to watch JS.
-  if (!e || !e.payload)
-    return;
-
-  const relay = {};
-  if (e.payload.HEALTH_STEPS !== undefined)
-    relay.HEALTH_STEPS = e.payload.HEALTH_STEPS;
-  if (e.payload.HEART_RATE_BPM !== undefined)
-    relay.HEART_RATE_BPM = e.payload.HEART_RATE_BPM;
-  if (e.payload.QUIET_TIME !== undefined)
-    relay.QUIET_TIME = e.payload.QUIET_TIME;
-
-  if (Object.keys(relay).length === 0)
-    return;
-
+function sendWeather(temp, feelsLike, code, sunrise, sunset) {
+  const [srH, srM] = hmsParts(sunrise);
+  const [ssH, ssM] = hmsParts(sunset);
+  const msg = {
+    WEATHER_CODE: code,
+    WEATHER_TEMP: temp,
+    WEATHER_FEELS_LIKE: feelsLike,
+    WEATHER_SUNRISE_H: srH,
+    WEATHER_SUNRISE_M: srM,
+    WEATHER_SUNSET_H: ssH,
+    WEATHER_SUNSET_M: ssM,
+  };
+  console.log("weather: temp=" + temp + " feels=" + feelsLike + " code=" + code);
   Pebble.sendAppMessage(
-    relay,
-    function () { /* forwarded health snapshot */ },
-    function (err) { console.log("relay: forward failed " + JSON.stringify(err)); }
+    msg,
+    function () { /* forwarded */ },
+    function (err) { console.log("relay: weather send failed " + JSON.stringify(err)); }
   );
+}
+
+function fetchWeather(lat, lon) {
+  const path =
+    "/v1/forecast?latitude=" + lat + "&longitude=" + lon +
+    "&current=temperature_2m,apparent_temperature,weather_code" +
+    "&daily=sunrise,sunset&timezone=auto";
+  console.log("weather: fetching " + path);
+  return fetch("https://api.open-meteo.com" + path, {
+    headers: { Accept: "application/json" },
+  })
+    .then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    })
+    .then(function (data) {
+      const temp = Math.round(data.current.temperature_2m);
+      const feelsLike = Math.round(data.current.apparent_temperature);
+      const code = data.current.weather_code;
+      const sunrise = data.daily.sunrise[0];
+      const sunset = data.daily.sunset[0];
+      sendWeather(temp, feelsLike, code, sunrise, sunset);
+    })
+    .catch(function (e) {
+      console.log("weather error: " + e);
+    });
+}
+
+// Resolves the coordinates to use. forceGeolocate=true always fixes GPS;
+// otherwise the cache is returned immediately if available.
+function getCoords(forceGeolocate) {
+  if (!forceGeolocate && lastLat !== null && lastLon !== null) {
+    return Promise.resolve({ lat: lastLat, lon: lastLon });
+  }
+  return new Promise(function (resolve, reject) {
+    console.log("location: requesting");
+    try {
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          const c = pos.coords;
+          lastLat = c.latitude;
+          lastLon = c.longitude;
+          console.log("location: got " + lastLat + ", " + lastLon);
+          resolve({ lat: lastLat, lon: lastLon });
+        },
+        function (err) {
+          reject(new Error("location error: " + (err && err.message)));
+        },
+        { enableHighAccuracy: false, timeout: 30000, maximumAge: 600000 }
+      );
+    } catch (e) {
+      reject(new Error("location construct error: " + e));
+    }
+  });
+}
+
+function requestWeather(mode) {
+  if (weatherBusy) return;
+  weatherBusy = true;
+
+  let coordsP;
+  if (mode === 1) {
+    // Periodic refresh: cached coords only, no GPS re-request. If no cache yet,
+    // skip until the next hour-change geolocate fills it.
+    if (lastLat === null || lastLon === null) {
+      weatherBusy = false;
+      return;
+    }
+    coordsP = Promise.resolve({ lat: lastLat, lon: lastLon });
+  } else {
+    // Hour change / initial: geolocate, then fetch.
+    coordsP = getCoords(true);
+  }
+
+  coordsP
+    .then(function (c) { return fetchWeather(c.lat, c.lon); })
+    .catch(function (e) { console.log("" + e); })
+    .then(function () { weatherBusy = false; });
+}
+
+Pebble.addEventListener("ready", function () {
+  console.log("U: pkjs ready");
+  requestWeather(0); // initial geolocate + fetch (matches the Moddable
+                     // hourchange listener, which fires immediately on subscribe)
+});
+
+Pebble.addEventListener("appmessage", function (e) {
+  if (!e || !e.payload) return;
+  if (e.payload.REQUEST_WEATHER !== undefined) {
+    requestWeather(e.payload.REQUEST_WEATHER);
+  }
 });
