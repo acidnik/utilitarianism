@@ -14,12 +14,29 @@
 // Coordinates are cached in memory so the periodic refresh doesn't re-request
 // GPS, exactly like the previous watch-side `lastLat/lastLon` cache.
 //
-// Written without async/await: the original PKJS used plain callbacks/promises
-// and the SDK webpack step does not transpile modern syntax.
+// Networking uses XMLHttpRequest: the PKJS runtime has no fetch(). The
+// setRequestHeader / getAllResponseHeaders patches below work around proxy
+// quirks (empty header names and trailing CRLF crashing the splitter),
+// carried over from the former pebbleproxy setup.
 
 let lastLat = null;
 let lastLon = null;
 let weatherBusy = false;
+
+// Workaround 1: ignore empty header names (trailing \n -> split "").
+const _origSRH = XMLHttpRequest.prototype.setRequestHeader;
+XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+  if (!name) return;
+  return _origSRH.call(this, name, value);
+};
+
+// Workaround 2: strip trailing line endings from getAllResponseHeaders output.
+const _origGARH = XMLHttpRequest.prototype.getAllResponseHeaders;
+XMLHttpRequest.prototype.getAllResponseHeaders = function () {
+  const raw = _origGARH.call(this);
+  if (!raw) return '';
+  return raw.replace(/(?:\r\n)+$/g, '').replace(/^\r\n/, '');
+};
 
 // "2026-06-29T05:12" -> [hour, minute] numbers.
 function hmsParts(iso) {
@@ -49,18 +66,31 @@ function sendWeather(temp, feelsLike, code, sunrise, sunset) {
 }
 
 function fetchWeather(lat, lon) {
-  const path =
-    "/v1/forecast?latitude=" + lat + "&longitude=" + lon +
+  const url =
+    "https://api.open-meteo.com/v1/forecast?latitude=" + lat + "&longitude=" + lon +
     "&current=temperature_2m,apparent_temperature,weather_code" +
     "&daily=sunrise,sunset&timezone=auto";
-  console.log("weather: fetching " + path);
-  return fetch("https://api.open-meteo.com" + path, {
-    headers: { Accept: "application/json" },
+  console.log("weather: fetching " + url);
+  return new Promise(function (resolve, reject) {
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", url, true);
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.onload = function () {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (e) {
+          reject(new Error("weather parse error: " + e));
+        }
+      } else {
+        reject(new Error("HTTP " + xhr.status));
+      }
+    };
+    xhr.onerror = function () { reject(new Error("weather network error")); };
+    xhr.ontimeout = function () { reject(new Error("weather timeout")); };
+    xhr.timeout = 30000;
+    xhr.send();
   })
-    .then(function (res) {
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      return res.json();
-    })
     .then(function (data) {
       const temp = Math.round(data.current.temperature_2m);
       const feelsLike = Math.round(data.current.apparent_temperature);
@@ -128,8 +158,9 @@ function requestWeather(mode) {
 
 Pebble.addEventListener("ready", function () {
   console.log("U: pkjs ready");
-  requestWeather(0); // initial geolocate + fetch (matches the Moddable
-                     // hourchange listener, which fires immediately on subscribe)
+  // No initial fetch here: the watch (C) drives the weather cadence (an
+  // initial fetch ~5s after launch, then hour-change + 15-min refreshes)
+  // and sends REQUEST_WEATHER. PKJS is a dumb network responder.
 });
 
 Pebble.addEventListener("appmessage", function (e) {

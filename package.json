@@ -1,7 +1,7 @@
 {
   "name": "utilitarianism",
   "author": "Nik Bilous",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "keywords": ["pebble-app"],
   "private": true,
   "dependencies": {},

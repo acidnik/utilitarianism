@@ -21,6 +21,7 @@
 // ---- Screen ----
 #define W 200
 #define H 228
+#define WEATHER_REFRESH_S (15 * 60)   // seconds between successful weather updates
 
 // ---- Fonts (system fonts matching the JS names) ----
 //   JS "Roboto-Bold" 49      -> ROBOTO_BOLD_SUBSET_49   (time)
@@ -52,7 +53,7 @@ static const GColor RAINBOW[6] = {
   {.argb = ARGB(255, 224, 0)},
   {.argb = ARGB(63, 214, 63)},
   {.argb = ARGB(42, 155, 255)},
-  {.argb = ARGB(155, 77, 255)},
+  {.argb = GColorPurpleARGB8},
 };
 
 static const char *DAYS[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
@@ -87,8 +88,10 @@ static uint8_t s_sunrise_h, s_sunrise_m;
 static uint8_t s_sunset_h, s_sunset_m;
 
 static int s_last_hour = -1;          // for hourchange detection
-static AppTimer *s_init_timer;
-static AppTimer *s_refresh_timer;
+static time_t s_last_weather_success = 0;  // unix time of last WEATHER_* inbox; 0 = never
+static bool s_weather_busy = false;        // request in flight (guard against overlapping triggers)
+static AppTimer *s_busy_clear_timer;       // failsafe: drop busy if PKJS never answers (e.g. HTTP error)
+static bool s_first_fetch_done = false;    // initial geolocate fired once; later refreshes are cached
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -195,14 +198,14 @@ static void layer_update_proc(Layer *layer, GContext *ctx) {
 
   char pctbuf[8];
   snprintf(pctbuf, sizeof(pctbuf), "%d", s_charge);
-  draw_text_centered(ctx, pctbuf, s_font_small, C_WHITE, badgeX, badgeX + badgeW, badgeY + 1);
+  draw_text_centered(ctx, pctbuf, s_font_small, C_WHITE, badgeX, badgeX + badgeW, badgeY - 1);
 
   // TIME
   time_t now = time(NULL);
   struct tm *t = localtime(&now);
   char tbuf[8];
   snprintf(tbuf, sizeof(tbuf), "%02d:%02d", t->tm_hour, t->tm_min);
-  draw_text_centered(ctx, tbuf, s_font_time, C_WHITE, 0, W, 28);
+  draw_text_centered(ctx, tbuf, s_font_time, C_WHITE, 0, W, 20);
 
   // GRID lines
   fill_rect(ctx, C_WHITE, 6, 86, W - 12, 2);
@@ -217,7 +220,7 @@ static void layer_update_proc(Layer *layer, GContext *ctx) {
   const bool weekend = (wday == 0 || wday == 6);
   char dbuf[12];
   snprintf(dbuf, sizeof(dbuf), "%s %02d", DAYS[wday], t->tm_mday);
-  draw_text_centered(ctx, dbuf, s_font_date, weekend ? C_GREEN : C_WHITE, 6, 99, 100);
+  draw_text_centered(ctx, dbuf, s_font_date, weekend ? C_GREEN : C_WHITE, 6, 99, 95);
 
   // Cell 2: WEATHER
   ensure_weather_dci();
@@ -237,7 +240,7 @@ static void layer_update_proc(Layer *layer, GContext *ctx) {
   char hb[16];
   if (s_bpm < 0) snprintf(hb, sizeof(hb), "--");
   else snprintf(hb, sizeof(hb), "%d", (int)s_bpm);
-  draw_text_centered(ctx, hb, s_font_big, C_WHITE, col1, col2, 175);
+  draw_text_centered(ctx, hb, s_font_big, C_WHITE, col1, col2, 170);
 
   // Cell 4: STEPS (middle bottom)
   const int stepsX = col2 + ((col3 - col2) - 29) / 2;
@@ -245,7 +248,7 @@ static void layer_update_proc(Layer *layer, GContext *ctx) {
   char sb[16];
   if (s_steps < 0) snprintf(sb, sizeof(sb), "--");
   else snprintf(sb, sizeof(sb), "%d", (int)s_steps);
-  draw_text_centered(ctx, sb, s_font_big, C_WHITE, col2, col3, 175);
+  draw_text_centered(ctx, sb, s_font_big, C_WHITE, col2, col3, 170);
 
   // Cell 5: Bluetooth + Quiet Time (right bottom)
   const int center5 = (col3 + colR) / 2;
@@ -279,29 +282,30 @@ static void layer_update_proc(Layer *layer, GContext *ctx) {
 // Weather requests (C -> PKJS)
 // ---------------------------------------------------------------------------
 
+static void busy_clear_handler(void *data) {
+  (void)data;
+  s_busy_clear_timer = NULL;
+  s_weather_busy = false;
+  // PKJS never answered (HTTP error swallowed on the phone side): drop
+  // busy so the next tick re-evaluates the refresh threshold and retries.
+}
+
 static void send_weather_request(uint8_t mode) {
+  // Guard against overlapping triggers (init timer + tick firing close
+  // together, or several ticks arriving while a request is in flight).
+  if (s_weather_busy) return;
   DictionaryIterator *iter = NULL;
   if (app_message_outbox_begin(&iter) != APP_MSG_OK) return;
   dict_write_uint8(iter, MESSAGE_KEY_REQUEST_WEATHER, mode);
-  app_message_outbox_send();
-}
-
-static void refresh_timer_handler(void *data) {
-  (void)data;
-  s_refresh_timer = NULL;
-  // 15-minute reminder uses cached coordinates (no GPS re-request), matching
-  // the original Timer.repeat -> fetchWeather(lastLat, lastLon) path.
-  send_weather_request(1);
-  s_refresh_timer = app_timer_register(15 * 60 * 1000, refresh_timer_handler, NULL);
-}
-
-static void init_weather_timer_handler(void *data) {
-  (void)data;
-  s_init_timer = NULL;
-  // hourchange fires immediately in the Moddable runtime, so the first
-  // fetch geolocates. Send the equivalent here.
-  send_weather_request(0);
-  s_refresh_timer = app_timer_register(15 * 60 * 1000, refresh_timer_handler, NULL);
+  if (app_message_outbox_send() != APP_MSG_OK) return;
+  s_weather_busy = true;
+  s_first_fetch_done = true;
+  // Failsafe: if PKJS hits an HTTP/network error it logs but never
+  // answers, so without this the busy flag would stick. 60s is well
+  // under the 15-min refresh window, so a dropped request is retried
+  // on the next minute tick rather than held for the full window.
+  if (s_busy_clear_timer) app_timer_cancel(s_busy_clear_timer);
+  s_busy_clear_timer = app_timer_register(60000, busy_clear_handler, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -337,12 +341,20 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
     s_sunset_m = tuple->value->uint8;
   }
 
+  // Success: stamp the refresh clock, clear the in-flight guard.
+  s_last_weather_success = time(NULL);
+  if (s_busy_clear_timer) { app_timer_cancel(s_busy_clear_timer); s_busy_clear_timer = NULL; }
+  s_weather_busy = false;
   layer_mark_dirty(s_layer);
 }
 
 static void inbox_dropped_handler(AppMessageResult reason, void *context) {
   (void)context;
   (void)reason;
+  // Incoming weather dict was damaged in transit: behave like a
+  // no-answer timeout so the next tick retries.
+  if (s_busy_clear_timer) { app_timer_cancel(s_busy_clear_timer); s_busy_clear_timer = NULL; }
+  s_weather_busy = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,15 +382,28 @@ static void health_handler(HealthEventType event, void *context) {
   }
 }
 
+static bool weather_due(void) {
+  // Refresh threshold is measured from the last successful WEATHER_* inbox.
+  // On a failed request s_last_weather_success is NOT moved, so this returns
+  // true again and the next minute tick retries ("retry on failure") without
+  // any explicit retry timer.
+  if (s_last_weather_success == 0) return true;   // never succeeded yet
+  return (time(NULL) - s_last_weather_success) >= WEATHER_REFRESH_S;
+}
+
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
   (void)units_changed;
   layer_mark_dirty(s_layer);
 
-  // hourchange -> geolocate + refresh (one fetch per hour, like the JS version).
+  // hourchange -> force a fresh GPS fix (once per hour, like the JS version).
   if (tick_time->tm_hour != s_last_hour) {
     s_last_hour = tick_time->tm_hour;
-    send_weather_request(0);
+    if (weather_due()) send_weather_request(0);
+    return;
   }
+
+  // Minute tick: refresh from cache if the 15-min threshold has elapsed.
+  if (weather_due()) send_weather_request(s_first_fetch_done ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +431,12 @@ static void window_load(Window *window) {
   s_bm_bt      = gbitmap_create_with_resource(RESOURCE_ID_IC_BLUETOOTH);
   s_bm_bt_off  = gbitmap_create_with_resource(RESOURCE_ID_IC_BLUETOOTH_OFF);
 
+  // Seed s_last_hour so the first minute tick isn't mistaken for an hour
+  // change (would otherwise duplicate the init_timer's initial fetch).
+  time_t now = time(NULL);
+  struct tm *t = localtime(&now);
+  s_last_hour = t->tm_hour;
+
   // Initial sensor reads
   s_charge = battery_state_service_peek().charge_percent;
   s_connected = connection_service_peek_pebble_app_connection();
@@ -424,15 +455,17 @@ static void window_load(Window *window) {
   app_message_register_inbox_received(inbox_received_handler);
   app_message_register_inbox_dropped(inbox_dropped_handler);
 
-  // Initial weather fetch (geolocate) shortly after the channel opens, then
-  // start the 15-minute cached-refresh timer.
-  s_init_timer = app_timer_register(5000, init_weather_timer_handler, NULL);
+  // Initial fetch: tick_timer_service_subscribe fires once immediately on
+  // subscribe in this runtime, which performs the first fetch via the single
+  // gate (weather_due() true since success==0; mode 0 since first_fetch_done
+  // is false). All refreshes — initial, hour-change, 15-min — go through
+  // tick_handler -> weather_due -> send_weather_request, so they dedupe via
+  // weather_due() and the busy guard. No separate init timer.
 }
 
 static void window_unload(Window *window) {
   (void)window;
-  if (s_init_timer) { app_timer_cancel(s_init_timer); s_init_timer = NULL; }
-  if (s_refresh_timer) { app_timer_cancel(s_refresh_timer); s_refresh_timer = NULL; }
+  if (s_busy_clear_timer) { app_timer_cancel(s_busy_clear_timer); s_busy_clear_timer = NULL; }
 
   tick_timer_service_unsubscribe();
   health_service_events_unsubscribe();
