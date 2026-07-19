@@ -131,6 +131,54 @@ static void draw_bitmap(GContext *ctx, GBitmap *bm, int x, int y) {
   graphics_context_set_compositing_mode(ctx, GCompOpAssign);
 }
 
+// ---- Daylight bar helpers ----
+
+// Convert hour + minute to minutes from midnight.
+static int time_to_min(int hour, int minute) {
+  return hour * 60 + minute;
+}
+
+// X-pixel position of a time (in minutes from midnight) within the
+// 12-hour (720-minute) daylight window starting at win_start.
+// Returns [0, W-1].
+static int daybar_tick_x(int time_min, int win_start) {
+  return clamp_int(round_div((time_min - win_start) * W, 720), 0, W - 1);
+}
+
+// Draw the full daylight bar: greyD background, yellow day-range,
+// green current-time marker, and 12 hour ticks (black on yellow,
+// yellow on dark).  Called from layer_update_proc.
+static void draw_daylight_bar(GContext *ctx, const struct tm *t) {
+  if (!s_have_sun) return;
+
+  const int sr = time_to_min(s_sunrise_h, s_sunrise_m);
+  const int ss = time_to_min(s_sunset_h, s_sunset_m);
+  const int cur = time_to_min(t->tm_hour, t->tm_min);
+  const int noon = (sr + ss) / 2;
+  const int win_start = (cur < noon) ? (noon - 720) : noon;
+
+  // Background — full-width grayD strip
+  fill_rect(ctx, C_GRAYD, 0, 210, W, 14);
+
+  // Daylight segment — yellow between sunrise and sunset
+  const int sx = daybar_tick_x(sr, win_start);
+  const int ex = daybar_tick_x(ss, win_start);
+  fill_rect(ctx, C_YELLOW, sx, 210, ex - sx, 14);
+
+  // Current-time marker — green, 4×22 px, drawn BEFORE ticks
+  const int mark_x = clamp_int(daybar_tick_x(cur, win_start), 0, W - 4);
+  fill_rect(ctx, C_GREEN, mark_x, 206, 4, 22);
+
+  // Hour ticks — 12 strokes at :00 of each hour inside the window.
+  // Colour inverts against the bar: black on yellow, yellow on dark.
+  const int first_hour = ((win_start + 59) / 60) * 60;  // ceil to next :00
+  for (int m = first_hour; m < win_start + 720; m += 60) {
+    const int x = daybar_tick_x(m, win_start);
+    const bool in_daylight = (m >= sr && m <= ss);
+    fill_rect(ctx, in_daylight ? C_BLACK : C_YELLOW, x, 210, 1, 14);
+  }
+}
+
 // Open-Meteo weather_code -> icon resource (mirrors weatherIcon() in the JS).
 static uint32_t weather_icon_resource(int code) {
   if (code == 0) return RESOURCE_ID_IC_SUNNY;       // Clear sky
@@ -255,27 +303,8 @@ static void layer_update_proc(Layer *layer, GContext *ctx) {
   draw_bitmap(ctx, s_connected ? s_bm_bt : s_bm_bt_off, center5 - 8, 147);
   if (quiet_time_is_active()) draw_bitmap(ctx, s_bm_quiet, center5 - 9, 182);
 
-  // DAYLIGHT BAR — 12-hour window centered on astronomical noon
-  //   AM: [midnight, noon]  PM: [noon, midnight]  (astronomical)
-  if (s_have_sun) {
-    const int sr = s_sunrise_h * 60 + s_sunrise_m;   // minutes from midnight
-    const int ss = s_sunset_h * 60 + s_sunset_m;
-    const int cur = t->tm_hour * 60 + t->tm_min;
-    const int noon = (sr + ss) / 2;
-
-    const bool isAM = (cur < noon);
-    const int winStart = isAM ? (noon - 12 * 60) : noon;
-    const int winLen = 12 * 60;
-
-    fill_rect(ctx, C_GRAYD, 0, 210, W, 14);
-    const int sx = clamp_int(round_div((sr - winStart) * W, winLen), 0, W);
-    const int ex = clamp_int(round_div((ss - winStart) * W, winLen), 0, W);
-    fill_rect(ctx, C_YELLOW, sx, 210, ex - sx, 14);
-
-    const int markX = round_div((cur - winStart) * W, winLen);
-    const int markClamped = clamp_int(markX, 0, W - 4);
-    fill_rect(ctx, C_GREEN, markClamped, 206, 4, 22);
-  }
+  // DAYLIGHT BAR — 12-hour window with hour ticks
+  draw_daylight_bar(ctx, t);
 }
 
 // ---------------------------------------------------------------------------
